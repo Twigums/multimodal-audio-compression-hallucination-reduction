@@ -6,10 +6,11 @@ import soundfile as sf
 from semanticodec import SemantiCodec
 import torch
 
-ORIGINAL_DIR = Path("overview_and_setup/data/original")
-REPLACED_DIR = Path("overview_and_setup/data/replaced")
+ORIGINAL_DIR = Path("data/original")
+REPLACED_DIR = Path("data/replaced")
 TOKEN_RATE = 100
 VOCAB_SIZE = 16384
+
 
 def mp4_to_wav(input_path, output_path, sample_rate=16000, channels=1):
     input_path = Path(input_path)
@@ -22,6 +23,50 @@ def mp4_to_wav(input_path, output_path, sample_rate=16000, channels=1):
     .overwrite_output()
     .run(capture_stdout=True, capture_stderr=True))
     print(f"Successfully converted: {input_path.name} -> {output_path.name}")
+
+def process_audio_attention(input_path, output_path, token_rate: int = TOKEN_RATE, vocab_size: int = VOCAB_SIZE):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        extracted_audio = tmpdir / "extracted.wav"
+        processed_audio = tmpdir / "processed.wav"
+
+        (ffmpeg
+         .input(str(input_path))
+         .output(str(extracted_audio), ac=1, ar=16000)
+         .overwrite_output()
+         .run(quiet=True))
+
+        from attention_token_allocation import ModifiedSemantiCodec
+        modifiedSemanticodec = ModifiedSemantiCodec(
+            token_rate=token_rate,
+            semantic_vocab_size=vocab_size,
+            force_cpu=True
+        )
+
+        result = modifiedSemanticodec.encode(str(extracted_audio))
+        waveform = modifiedSemanticodec.decode(result)
+
+        if isinstance(waveform, torch.Tensor):
+            waveform_np = waveform[0, 0].cpu().numpy() 
+        else:
+            waveform_np = waveform[0, 0]
+
+        sf.write(str(processed_audio), waveform_np, 16000)
+
+        new_audio_stream = ffmpeg.input(str(processed_audio))
+
+        (ffmpeg
+         .output(
+             new_audio_stream.audio,
+             str(output_path),
+             acodec="pcm_s16le",
+         )
+         .overwrite_output()
+         .run(quiet=True))
+ 
+    print(f"Audio processed with attention: {input_path.name} -> {output_path}")
 
 def process_video_attention(input_path, output_path, token_rate: int = TOKEN_RATE, vocab_size: int = VOCAB_SIZE):
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,8 +117,8 @@ def process_video_attention(input_path, output_path, token_rate: int = TOKEN_RAT
     print(f"Video processed with attention: {input_path.name} -> {output_path}")
 
 def test_attention():
-    ORIGINAL_DIR = Path("overview_and_setup/data/original")
-    REPLACED_DIR = Path("overview_and_setup/data/replaced")
+    ORIGINAL_DIR = Path("data/original")
+    REPLACED_DIR = Path("data/replaced")
     
     if not ORIGINAL_DIR.exists():
         raise FileNotFoundError(f"Input folder not found: {ORIGINAL_DIR.resolve()}")
@@ -81,9 +126,10 @@ def test_attention():
     REPLACED_DIR.mkdir(parents=True, exist_ok=True)
     
     mp4s = sorted(p for p in ORIGINAL_DIR.iterdir() if p.suffix.lower() == ".mp4")
+    wavs = sorted(p for p in ORIGINAL_DIR.iterdir() if p.suffix.lower() == ".wav")
     
-    if not mp4s:
-        print(f"No .mp4 files found in {ORIGINAL_DIR.resolve()}")
+    if not mp4s and not wavs:
+        print(f"No .mp4/wav files found in {ORIGINAL_DIR.resolve()}")
         return
     
     for src in mp4s:
@@ -91,7 +137,12 @@ def test_attention():
         process_video_attention(src, dst)
         print(f"Completed: {src.name} -> {dst.name}")
 
+    for src in wavs:
+        dst = REPLACED_DIR / f"{src.stem}{src.suffix}"
+        process_audio_attention(src, dst)
+        print(f"Completed: {src.name} -> {dst.name}")
+
 if __name__ == "__main__":
     test_attention()
-    mp4_to_wav("overview_and_setup/data/replaced/avhbench_example_attention.mp4", "overview_and_setup/data/replaced/avhbench_example_attention.wav")
+    # mp4_to_wav("overview_and_setup/data/replaced/avhbench_example_attention.mp4", "overview_and_setup/data/replaced/avhbench_example_attention.wav")
 
